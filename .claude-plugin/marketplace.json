@@ -7,11 +7,11 @@
   "plugins": [
     {
       "name": "bmad-utility-skills",
-      "source": "./plugins/bmad-utility-skills",
+      "source": ".",
       "description": "BMad Code Open Source Team Utility Skills",
       "version": "1.0.0",
       "author": {
-        "name": "BMad Code Open Source Tteam"
+        "name": "BMad Code Open Source Team"
       }
     }
   ]
