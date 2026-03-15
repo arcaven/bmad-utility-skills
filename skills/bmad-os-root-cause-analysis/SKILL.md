@@ -1,8 +1,7 @@
 ---
 name: bmad-os-root-cause-analysis
-description: Analyzes a bug-fix commit or PR and produces a structured Root Cause Analysis report covering what went wrong, why, and what guardrails failed.
+description: Perform root cause analysis on a bug fix. Use when the user says 'run RCA on [commit/PR]', 'root cause analysis', or 'analyze what caused this bug'. Accepts a commit SHA, PR number, issue, or description of a fix.
 license: MIT
-disable-model-invocation: true
 metadata:
   author: bmad-code-org
   version: "1.0.0"
