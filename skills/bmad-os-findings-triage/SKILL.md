@@ -84,7 +84,7 @@ After creating the team, note your own registered team name for the agent prompt
 
 ### 1.6 Spawn Agents
 
-Read the agent prompt template from `prompts/agent-prompt.md`.
+Read the agent prompt template from `agent-prompt.md`.
 
 For each finding, spawn one agent using the Agent tool with these parameters:
 - `name`: `f{n}-agent`
