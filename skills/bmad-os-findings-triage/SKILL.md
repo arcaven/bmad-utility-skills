@@ -26,6 +26,7 @@ Also accept optional parameters:
 - **Working directory / worktree path** — where source files live (default: current working directory).
 - **Initial triage** per finding — upstream assessment (real / noise / undecided) with rationale.
 - **Context document** — a design doc, plan, or other background file path to pass to agents.
+- **PR URL** — if the findings originate from a PR review, record the PR URL (e.g., `owner/repo#123` or full URL). This determines wrap-up behavior in Phase 3.
 
 ### 1.2 Parse Findings
 
@@ -149,9 +150,10 @@ Keep it compact. No decoration beyond what is needed.
 
 ### 2.3 Process Decisions
 
-Agents will send messages matching: `DECISION F{n} {task_id} [CATEGORY] | [summary]`
+Agents will send messages matching: `DECISION F{n} {task_id} [CATEGORY] | [summary]` followed by a `Human said: "..."` line quoting the human's exact words.
 
-When received:
+**The agent's decision message IS the human's decision.** The agent includes the human's verbatim words as proof. Trust it and process the decision immediately. Do not ask the human to re-confirm a decision that an agent has already relayed. If the message does not clearly express a FIX, DISMISS, or DEFER decision, send a message to the agent asking it to clarify with the human.
+
 1. **Update the task** — first call `TaskGet("{task_id}")` to read the current task description, then prepend the decision:
    ```
    TaskUpdate({
@@ -206,31 +208,7 @@ When the current wave is complete (all findings resolved):
 
 When all findings across all waves are resolved:
 
-### 3.1 Final Scorecard
-
-```
-=== Final Triage Scorecard ===
-
-Total findings: {N}
-
-  FIX:      {count}
-  DISMISS:  {count}
-  DEFER:    {count}
-
-Files changed:
-  - {file1}
-  - {file2}
-  ...
-
-Findings:
-  F1  [{SEVERITY}] {title} — {DECISION}
-  F2  [{SEVERITY}] {title} — {DECISION}
-  ...
-
-=== End Triage ===
-```
-
-### 3.2 Shutdown Remaining Agents
+### 3.1 Shutdown Remaining Agents
 
 Send shutdown requests to any agents still alive (there should be none if all decisions were processed, but handle stragglers):
 
@@ -242,14 +220,68 @@ SendMessage({
 })
 ```
 
-### 3.3 Offer to Save
+### 3.2 Commit and Push
 
-Ask the human:
-> "Save the scorecard to a file? (y/n)"
+Invoke the `tam-commit` skill to commit all changes from FIX decisions. Then invoke the `tam-push` skill to push.
 
-If yes, write the scorecard to `_bmad-output/triage-reports/triage-{YYYY-MM-DD}-{team-name}.md`.
+### 3.3 Triage Summary
 
-### 3.4 Delete Team
+Compose a triage summary:
+
+```
+Triage complete: {N} findings — FIX: {count}, DISMISS: {count}, DEFER: {count}
+
+  F1  [{SEVERITY}] {title} — {DECISION}
+  F2  [{SEVERITY}] {title} — {DECISION}
+  ...
+```
+
+### 3.4 Post Results
+
+**If PR URL was provided (PR-sourced findings):**
+
+1. Post the triage summary as a PR comment:
+   ```
+   gh pr comment {PR} --body "{triage summary}"
+   ```
+2. Fetch all review threads from the PR to map findings to threads:
+   ```
+   gh api graphql -f query='
+     query($owner:String!, $repo:String!, $pr:Int!) {
+       repository(owner:$owner, name:$repo) {
+         pullRequest(number:$pr) {
+           reviewThreads(last:100) {
+             nodes { id isResolved comments(first:1) { nodes { body path } } }
+           }
+         }
+       }
+     }' -f owner={owner} -f repo={repo} -F pr={number}
+   ```
+3. For each finding, match it to an unresolved thread by file path and content. For each matched thread:
+   - Reply with a short outcome (FIX: what changed, DISMISS: why it's a false positive, DEFER: why it pre-dates the change):
+     ```
+     gh api graphql -f query='
+       mutation($threadId:ID!, $body:String!) {
+         addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
+           comment { id }
+         }
+       }' -f threadId={threadNodeId} -f body="{short outcome}"
+     ```
+   - Resolve the conversation:
+     ```
+     gh api graphql -f query='
+       mutation($threadId:ID!) {
+         resolveReviewThread(input:{threadId:$threadId}) {
+           thread { isResolved }
+         }
+       }' -f threadId={threadNodeId}
+     ```
+
+**If no PR URL (non-PR findings):**
+
+Present the triage summary inline in the conversation. Done.
+
+### 3.5 Delete Team
 
 ```
 TeamDelete()

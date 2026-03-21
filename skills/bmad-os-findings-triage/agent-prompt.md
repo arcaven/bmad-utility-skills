@@ -78,10 +78,12 @@ When the human reaches a decision, send exactly ONE message to the team lead:
 SendMessage({
   type: "message",
   recipient: "{{TEAM_LEAD_NAME}}",
-  content: "DECISION {{FINDING_ID}} {{TASK_ID}} [CATEGORY] | [one-sentence summary]",
+  content: "DECISION {{FINDING_ID}} {{TASK_ID}} [CATEGORY] | [one-sentence summary]\nHuman said: \"[exact quote of what the human told you]\"",
   summary: "{{FINDING_ID}} [CATEGORY]"
 })
 ```
+
+Always include the human's exact words that expressed the decision. This is not optional — the team lead needs to see the human's intent directly, not just your interpretation of it.
 
 Where `[CATEGORY]` is one of:
 
