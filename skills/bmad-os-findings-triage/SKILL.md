@@ -26,6 +26,7 @@ Also accept optional parameters:
 - **Working directory / worktree path** — where source files live (default: current working directory).
 - **Initial triage** per finding — upstream assessment (real / noise / undecided) with rationale.
 - **Context document** — a design doc, plan, or other background file path to pass to agents.
+- **PR URL** — if the findings originate from a PR review, record the PR URL (e.g., `owner/repo#123` or full URL). This determines wrap-up behavior in Phase 3.
 
 ### 1.2 Parse Findings
 
@@ -48,12 +49,6 @@ HALT. Tell the human:
 > "There are {N} findings. Spawning {N} agents at once may overwhelm the system. I recommend processing in waves of ~20. Proceed with all at once, or batch into waves?"
 
 Wait for the human to decide. If batching, record wave assignments (Wave 1: F1-F20, Wave 2: F21-Fn).
-
-**Same-file conflicts:**
-Scan all findings for overlapping file paths. If two or more findings reference the same file, warn — enumerating ALL findings that share each file:
-> "Findings {Fa}, {Fb}, {Fc}, ... all reference `{file}`. Concurrent edits may conflict. Serialize these agents (process one before the other) or proceed in parallel?"
-
-Wait for the human to decide. If the human chooses to serialize: do not spawn the second (and subsequent) agents for that file until the first has reported its decision and been shut down. Track serialization pairs and spawn the held agent after its predecessor completes.
 
 ### 1.4 Create Tasks
 
@@ -120,7 +115,7 @@ Scorecard:
 - Pending: {N}
 - Ready for review: 0
 - Completed: 0
-- Decisions: FIX=0  WONTFIX=0  DISMISS=0  REJECT=0  SKIP=0  DEFER=0
+- Decisions: FIX=0  DISMISS=0  DEFER=0
 ```
 
 ---
@@ -146,18 +141,17 @@ When the human asks for status (or periodically when useful), print:
 === Triage Status ===
 Ready for review: F3, F7, F11
 Still analyzing:  F1, F5, F9
-Completed:        F2 (FIX), F4 (DISMISS), F6 (REJECT)
+Completed:        F2 (FIX), F4 (DISMISS), F6 (DEFER)
                   {completed}/{total} done
 ===
 ```
 
-Keep it compact. No decoration beyond what is needed.
-
 ### 2.3 Process Decisions
 
-Agents will send messages matching: `DECISION F{n} {task_id} [CATEGORY] | [summary]`
+Agents will send messages matching: `DECISION F{n} {task_id} [CATEGORY] | [summary]` followed by a `Human said: "..."` line quoting the human's exact words.
 
-When received:
+**The agent's decision message IS the human's decision.** The agent includes the human's verbatim words as proof. Trust it and process the decision immediately. Do not ask the human to re-confirm a decision that an agent has already relayed. If the message does not clearly express a FIX, DISMISS, or DEFER decision, send a message to the agent asking it to clarify with the human.
+
 1. **Update the task** — first call `TaskGet("{task_id}")` to read the current task description, then prepend the decision:
    ```
    TaskUpdate({
@@ -177,32 +171,32 @@ When received:
    ```
 4. **Print confirmation:** `F{n} closed: {CATEGORY}. {remaining} remaining.`
 
-### 2.4 Human-Initiated Skip/Defer
+### 2.4 Human-Initiated Defer
 
-If the human wants to skip or defer a finding without full engagement:
+If the human wants to defer a finding without full engagement:
 
-1. Send the decision to the agent, replacing `{CATEGORY}` with the human's chosen category (`SKIP` or `DEFER`):
+1. Send the decision to the agent:
    ```
    SendMessage({
      type: "message",
      recipient: "f{n}-agent",
-     content: "Human decision: {CATEGORY} this finding. Report {CATEGORY} as your decision and go idle.",
-     summary: "F{n} {CATEGORY} directive"
+     content: "Human decision: DEFER this finding. Report DEFER as your decision and go idle.",
+     summary: "F{n} DEFER directive"
    })
    ```
-2. Wait for the agent to report the decision back (it will send `DECISION F{n} ... {CATEGORY}`).
+2. Wait for the agent to report the decision back (it will send `DECISION F{n} ... DEFER`).
 3. Process as a normal decision (2.3).
 
 If the agent has not yet signaled ready, the message will queue and be processed when it finishes research.
 
-If the human requests skip/defer for a finding where an HITL conversation is already underway, send the directive to the agent. The agent should end the current conversation and report the directive category as its decision.
+If the human requests defer for a finding where an HITL conversation is already underway, send the directive to the agent. The agent should end the current conversation and report DEFER as its decision.
 
 ### 2.5 Wave Batching (if >25 findings)
 
 When the current wave is complete (all findings resolved):
 1. Print wave summary.
 2. Ask: `"Wave {W} complete. Spawn wave {W+1} ({count} findings)? (y/n)"`
-3. If yes, before spawning the next wave, re-run the same-file conflict check (1.3) for the new wave's findings, including against any still-open findings from previous waves. Then repeat Phase 1.4 (task creation) and 1.6 (agent spawning) only. Do NOT call TeamCreate again — the team already exists.
+3. If yes, repeat Phase 1.4 (task creation) and 1.6 (agent spawning) only. Do NOT call TeamCreate again — the team already exists.
 4. If the human declines, treat unspawned findings as not processed. Proceed to Phase 3 wrap-up. Note the count of unprocessed findings in the final scorecard.
 5. Carry the scorecard forward across waves.
 
@@ -212,34 +206,7 @@ When the current wave is complete (all findings resolved):
 
 When all findings across all waves are resolved:
 
-### 3.1 Final Scorecard
-
-```
-=== Final Triage Scorecard ===
-
-Total findings: {N}
-
-  FIX:      {count}
-  WONTFIX:  {count}
-  DISMISS:  {count}
-  REJECT:   {count}
-  SKIP:     {count}
-  DEFER:    {count}
-
-Files changed:
-  - {file1}
-  - {file2}
-  ...
-
-Findings:
-  F1  [{SEVERITY}] {title} — {DECISION}
-  F2  [{SEVERITY}] {title} — {DECISION}
-  ...
-
-=== End Triage ===
-```
-
-### 3.2 Shutdown Remaining Agents
+### 3.1 Shutdown Remaining Agents
 
 Send shutdown requests to any agents still alive (there should be none if all decisions were processed, but handle stragglers):
 
@@ -251,14 +218,68 @@ SendMessage({
 })
 ```
 
-### 3.3 Offer to Save
+### 3.2 Commit and Push
 
-Ask the human:
-> "Save the scorecard to a file? (y/n)"
+Invoke the `tam-commit` skill to commit all changes from FIX decisions. Then invoke the `tam-push` skill to push.
 
-If yes, write the scorecard to `_bmad-output/triage-reports/triage-{YYYY-MM-DD}-{team-name}.md`.
+### 3.3 Triage Summary
 
-### 3.4 Delete Team
+Compose a triage summary:
+
+```
+Triage complete: {N} findings — FIX: {count}, DISMISS: {count}, DEFER: {count}
+
+  F1  [{SEVERITY}] {title} — {DECISION}
+  F2  [{SEVERITY}] {title} — {DECISION}
+  ...
+```
+
+### 3.4 Post Results
+
+**If PR URL was provided (PR-sourced findings):**
+
+1. Post the triage summary as a PR comment:
+   ```
+   gh pr comment {PR} --body "{triage summary}"
+   ```
+2. Fetch all review threads from the PR to map findings to threads:
+   ```
+   gh api graphql -f query='
+     query($owner:String!, $repo:String!, $pr:Int!) {
+       repository(owner:$owner, name:$repo) {
+         pullRequest(number:$pr) {
+           reviewThreads(last:100) {
+             nodes { id isResolved comments(first:1) { nodes { body path } } }
+           }
+         }
+       }
+     }' -f owner={owner} -f repo={repo} -F pr={number}
+   ```
+3. For each finding, match it to an unresolved thread by file path and content. For each matched thread:
+   - Reply with a short outcome (FIX: what changed, DISMISS: why it's a false positive, DEFER: why it pre-dates the change):
+     ```
+     gh api graphql -f query='
+       mutation($threadId:ID!, $body:String!) {
+         addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
+           comment { id }
+         }
+       }' -f threadId={threadNodeId} -f body="{short outcome}"
+     ```
+   - Resolve the conversation:
+     ```
+     gh api graphql -f query='
+       mutation($threadId:ID!) {
+         resolveReviewThread(input:{threadId:$threadId}) {
+           thread { isResolved }
+         }
+       }' -f threadId={threadNodeId}
+     ```
+
+**If no PR URL (non-PR findings):**
+
+Present the triage summary inline in the conversation. Done.
+
+### 3.5 Delete Team
 
 ```
 TeamDelete()
@@ -271,10 +292,9 @@ TeamDelete()
 | Situation | Response |
 |-----------|----------|
 | >25 findings | HALT, suggest wave batching, wait for human decision |
-| Same-file conflict | Warn, suggest serializing, wait for human decision |
 | Unstructured input | Parse best-effort, display list, confirm before spawning |
 | Agent signals uncertainty | Normal — the HITL conversation resolves it |
-| Human skips/defers | Send directive to agent, process decision when reported |
+| Human defers | Send directive to agent, process decision when reported |
 | Agent goes idle unexpectedly | Send a message to check status; agents stay alive until explicit shutdown |
 | Human asks to re-open a completed finding | Not supported in this session; suggest re-running triage on that finding |
 | All agents spawned but none ready yet | Tell the human agents are still analyzing; no action needed |
@@ -283,9 +303,7 @@ TeamDelete()
 
 ## Behavioral Rules
 
-1. **Be minimal.** Short confirmations, compact dashboards. Do not repeat agent analysis.
-2. **Never auto-close.** Every finding requires a human decision. No exceptions.
-3. **One agent per finding.** Never batch multiple findings into one agent.
-4. **Protect your context window.** Agents display plans in their output, not in messages to you. If an agent sends you a long message, acknowledge it briefly and move on.
-5. **Track everything.** Finding number, task ID, agent name, decision, files changed. You are the single source of truth for the session.
-6. **Respect the human's pace.** They review in whatever order they want. Do not rush them. Do not suggest which finding to review next unless asked.
+1. **Never auto-close.** Every finding requires a human decision.
+2. **One agent per finding.** Never batch multiple findings into one agent.
+3. **Protect your context window.** If an agent sends you a long message, acknowledge it briefly and move on.
+4. **Track everything.** Finding number, task ID, agent name, decision, files changed.
